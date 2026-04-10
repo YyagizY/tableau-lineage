@@ -164,7 +164,7 @@ def _build_fields_query(workbook_name: str) -> str:
       sheetsConnection {{
         nodes {{
           name
-          sheetFieldInstancesConnection {{
+          fieldsConnection {{
             nodes {{{field_fragment}
             }}
           }}
@@ -175,7 +175,7 @@ def _build_fields_query(workbook_name: str) -> str:
           name
           sheetsConnection {{
             nodes {{
-              sheetFieldInstancesConnection {{
+              fieldsConnection {{
                 nodes {{{field_fragment}
                 }}
               }}
@@ -313,15 +313,15 @@ def fetch_sheet_metadata(url: str) -> SheetMetadata:
         raise ValueError(f"View {sheet_name!r} not found in workbook {workbook_name!r}.")
 
     view = matched[0]
-    if "sheetFieldInstancesConnection" in view:
+    if "fieldsConnection" in view:
         # It's a worksheet — field data is directly available
-        field_nodes = view["sheetFieldInstancesConnection"].get("nodes", [])
+        field_nodes = view["fieldsConnection"].get("nodes", [])
     else:
         # It's a dashboard — collect fields from all inner sheets and deduplicate by name
         seen = set()
         field_nodes = []
         for sheet in view.get("sheetsConnection", {}).get("nodes", []):
-            for node in sheet.get("sheetFieldInstancesConnection", {}).get("nodes", []):
+            for node in sheet.get("fieldsConnection", {}).get("nodes", []):
                 name = node.get("name")
                 if name not in seen:
                     seen.add(name)
