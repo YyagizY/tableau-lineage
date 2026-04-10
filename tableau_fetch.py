@@ -8,10 +8,18 @@ and writes metadata.json to:
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Source ~/.zshrc so env vars set there are available regardless of how this is invoked
+for _line in subprocess.check_output(["zsh", "-c", "source ~/.zshrc && env"], text=True).splitlines():
+    if "=" in _line:
+        _k, _, _v = _line.partition("=")
+        os.environ.setdefault(_k, _v)
 
 from tableau_fetch.tableau import fetch_sheet_metadata, FieldInfo
 from tableau_fetch.databricks import resolve_delta_table
