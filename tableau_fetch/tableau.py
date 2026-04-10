@@ -231,14 +231,14 @@ def _parse_fields(nodes: list[dict]) -> tuple[list[FieldInfo], DatasourceInfo | 
     return fields, datasource
 
 
-def fetch_sheet_metadata(url: str, sheet_name: str) -> SheetMetadata:
+def fetch_sheet_metadata(url: str) -> SheetMetadata:
     parsed = parse_url(url)
     auth = authenticate(parsed)
 
     data = _graphql(
         auth,
         FIELDS_QUERY,
-        {"workbookName": parsed.workbook, "sheetName": sheet_name},
+        {"workbookName": parsed.workbook, "sheetName": parsed.view},
     )
 
     workbooks = data.get("workbooksConnection", {}).get("nodes", [])
@@ -247,7 +247,7 @@ def fetch_sheet_metadata(url: str, sheet_name: str) -> SheetMetadata:
 
     sheets = workbooks[0].get("sheetsConnection", {}).get("nodes", [])
     if not sheets:
-        raise ValueError(f"Sheet {sheet_name!r} not found in workbook {parsed.workbook!r}.")
+        raise ValueError(f"Sheet {parsed.view!r} not found in workbook {parsed.workbook!r}.")
 
     field_nodes = sheets[0].get("fieldsConnection", {}).get("nodes", [])
     fields, datasource = _parse_fields(field_nodes)
@@ -257,7 +257,7 @@ def fetch_sheet_metadata(url: str, sheet_name: str) -> SheetMetadata:
 
     return SheetMetadata(
         workbook=parsed.workbook,
-        sheet=sheet_name,
+        sheet=parsed.view,
         fields=fields,
         datasource=datasource,
     )

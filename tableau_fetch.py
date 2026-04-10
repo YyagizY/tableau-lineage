@@ -42,10 +42,10 @@ def _log(msg: str) -> None:
     print(f"  {msg}", flush=True)
 
 
-def run(url: str, sheet: str, repo_override: str | None = None) -> None:
+def run(url: str, repo_override: str | None = None) -> None:
     # Step 1: Tableau metadata
     _log("Connecting to Tableau Cloud...")
-    sheet_meta = fetch_sheet_metadata(url, sheet)
+    sheet_meta = fetch_sheet_metadata(url)
     ds = sheet_meta.datasource
     n_calculated = sum(1 for f in sheet_meta.fields if f.field_type == "calculated")
     n_direct = len(sheet_meta.fields) - n_calculated
@@ -87,8 +87,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Fetch Tableau report metadata and resolve the underlying delta table."
     )
-    parser.add_argument("--url", required=True, help="Tableau Cloud report URL")
-    parser.add_argument("--sheet", required=True, help="Sheet / view name")
+    parser.add_argument("--url", required=True, help="Tableau Cloud report URL (sheet name is derived from the URL)")
     parser.add_argument(
         "--repo",
         default=None,
@@ -97,7 +96,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        run(url=args.url, sheet=args.sheet, repo_override=args.repo)
+        run(url=args.url, repo_override=args.repo)
     except (ValueError, PermissionError, EnvironmentError) as exc:
         print(f"\nError: {exc}", file=sys.stderr)
         sys.exit(1)
