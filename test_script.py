@@ -51,12 +51,16 @@ print(f"Sheet    : {sheet_name!r}")
 raw = _graphql(auth, _build_fields_query(workbook_name), {})
 workbooks = raw.get("workbooksConnection", {}).get("nodes", [])
 wb_node = workbooks[0]
-all_views = (
-    wb_node.get("sheetsConnection", {}).get("nodes", [])
-    + wb_node.get("dashboardsConnection", {}).get("nodes", [])
-)
-matched = next((v for v in all_views if v["name"] == sheet_name), None)
-field_nodes = (matched.get("fieldsConnection") or {}).get("nodes", [])
+
+seen = set()
+field_nodes = []
+for ds in wb_node.get("embeddedDatasourcesConnection", {}).get("nodes", []):
+    for node in ds.get("fieldsConnection", {}).get("nodes", []):
+        name = node.get("name")
+        if name not in seen:
+            seen.add(name)
+            field_nodes.append(node)
+
 print(f"Field nodes : {len(field_nodes)}")
 for n in field_nodes:
     print(f"  {n.get('__typename', '?'):20s}  {n.get('name')}")
@@ -66,8 +70,8 @@ sample = next((n for n in field_nodes if n.get("__typename") == "ColumnField"), 
 print(sample) 
 
 #%%
-import json                                                                                                                                                            
-print(json.dumps(matched, indent=2))  
+import json
+print(json.dumps(wb_node.get("embeddedDatasourcesConnection", {}), indent=2))
 
 # %% Step 4 — Parse fields into structured FieldInfo + DatasourceInfo
 from tableau_fetch.tableau import _parse_fields

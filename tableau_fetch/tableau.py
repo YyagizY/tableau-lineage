@@ -164,10 +164,6 @@ def _build_fields_query(workbook_name: str) -> str:
       sheetsConnection {{
         nodes {{
           name
-          fieldsConnection {{
-            nodes {{{field_fragment}
-            }}
-          }}
         }}
       }}
       dashboardsConnection {{
@@ -175,10 +171,16 @@ def _build_fields_query(workbook_name: str) -> str:
           name
           sheetsConnection {{
             nodes {{
-              fieldsConnection {{
-                nodes {{{field_fragment}
-                }}
-              }}
+              name
+            }}
+          }}
+        }}
+      }}
+      embeddedDatasourcesConnection {{
+        nodes {{
+          name
+          fieldsConnection {{
+            nodes {{{field_fragment}
             }}
           }}
         }}
@@ -304,28 +306,16 @@ def fetch_sheet_metadata(url: str) -> SheetMetadata:
         raise ValueError(f"Workbook {parsed.workbook!r} not found on site {parsed.site!r}.")
 
     wb_node = all_workbooks[0]
-    all_views = (
-        wb_node.get("sheetsConnection", {}).get("nodes", [])
-        + wb_node.get("dashboardsConnection", {}).get("nodes", [])
-    )
-    matched = [v for v in all_views if v["name"] == sheet_name]
-    if not matched:
-        raise ValueError(f"View {sheet_name!r} not found in workbook {workbook_name!r}.")
 
-    view = matched[0]
-    if "fieldsConnection" in view:
-        # It's a worksheet — field data is directly available
-        field_nodes = view["fieldsConnection"].get("nodes", [])
-    else:
-        # It's a dashboard — collect fields from all inner sheets and deduplicate by name
-        seen = set()
-        field_nodes = []
-        for sheet in view.get("sheetsConnection", {}).get("nodes", []):
-            for node in sheet.get("fieldsConnection", {}).get("nodes", []):
-                name = node.get("name")
-                if name not in seen:
-                    seen.add(name)
-                    field_nodes.append(node)
+    # Collect fields from embedded datasources (fieldsConnection is not available on Sheet nodes)
+    seen: set[str] = set()
+    field_nodes = []
+    for ds in wb_node.get("embeddedDatasourcesConnection", {}).get("nodes", []):
+        for node in ds.get("fieldsConnection", {}).get("nodes", []):
+            name = node.get("name")
+            if name not in seen:
+                seen.add(name)
+                field_nodes.append(node)
     fields, datasource = _parse_fields(field_nodes)
 
     if datasource is None:
