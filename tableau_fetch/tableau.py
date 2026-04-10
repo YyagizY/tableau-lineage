@@ -120,20 +120,18 @@ def _graphql(auth: TableauAuth, query: str, variables: dict) -> dict:
     resp.raise_for_status()
     result = resp.json()
     if "errors" in result:
-        raise RuntimeError(f"Metadata API errors: {result['errors']}")
+        actual_errors = [
+            e for e in result["errors"]
+            if e.get("extensions", {}).get("severity", "ERROR") != "WARNING"
+        ]
+        if actual_errors:
+            raise RuntimeError(f"Metadata API errors: {actual_errors}")
     return result["data"]
 
 
-FIELDS_QUERY = """
-query SheetFields($workbookName: String!, $sheetName: String!) {
-  workbooksConnection(filter: { name: $workbookName }) {
-    nodes {
-      name
-      sheetsConnection(filter: { name: $sheetName }) {
-        nodes {
-          name
-          fieldsConnection {
-            nodes {
+def _build_fields_query(workbook_name: str) -> str:
+    safe = workbook_name.replace("\\", "\\\\").replace('"', '\\"')
+    field_fragment = """
               name
               ... on ColumnField {
                 __typename
@@ -145,9 +143,7 @@ query SheetFields($workbookName: String!, $sheetName: String!) {
                       name
                       schema
                       fullName
-                      database {
-                        name
-                      }
+                      database { name }
                     }
                   }
                 }
@@ -159,16 +155,76 @@ query SheetFields($workbookName: String!, $sheetName: String!) {
               }
               ... on DatasourceField {
                 __typename
-                dataType
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
+              }"""
+    return f"""
+{{
+  workbooksConnection(filter: {{ name: "{safe}" }}) {{
+    nodes {{
+      name
+      sheetsConnection {{
+        nodes {{
+          name
+          sheetFieldInstancesConnection {{
+            nodes {{{field_fragment}
+            }}
+          }}
+        }}
+      }}
+      dashboardsConnection {{
+        nodes {{
+          name
+          sheetsConnection {{
+            nodes {{
+              sheetFieldInstancesConnection {{
+                nodes {{{field_fragment}
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
 """
+
+
+def _normalize(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _resolve_workbook_name(auth: TableauAuth, workbook_slug: str) -> str:
+    """Resolve the exact workbook name from its URL slug using the REST API."""
+    resp = requests.get(
+        f"{auth.base_url}/sites/{auth.site_id}/workbooks",
+        params={"filter": f"contentUrl:eq:{workbook_slug}"},
+        headers={"X-Tableau-Auth": auth.token, "Accept": "application/json"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    workbooks = resp.json().get("workbooks", {}).get("workbook", [])
+    if not workbooks:
+        raise ValueError(f"Workbook not found for slug {workbook_slug!r}.")
+    return workbooks[0]["name"]
+
+
+def resolve_sheet_name(auth: TableauAuth, workbook_slug: str, view_slug: str) -> str:
+    """Resolve the actual sheet name from the URL slugs using the REST API."""
+    content_url = f"{workbook_slug}/sheets/{view_slug}"
+    resp = requests.get(
+        f"{auth.base_url}/sites/{auth.site_id}/views",
+        params={"filter": f"contentUrl:eq:{content_url}"},
+        headers={"X-Tableau-Auth": auth.token, "Accept": "application/json"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    views = resp.json().get("views", {}).get("view", [])
+    if not views:
+        raise ValueError(
+            f"View not found for workbook={workbook_slug!r} view={view_slug!r}. "
+            "Check the URL is correct and the PAT has tableau:views:read scope."
+        )
+    return views[0]["name"]
 
 
 def _parse_fields(nodes: list[dict]) -> tuple[list[FieldInfo], DatasourceInfo | None]:
@@ -235,29 +291,49 @@ def fetch_sheet_metadata(url: str) -> SheetMetadata:
     parsed = parse_url(url)
     auth = authenticate(parsed)
 
-    data = _graphql(
-        auth,
-        FIELDS_QUERY,
-        {"workbookName": parsed.workbook, "sheetName": parsed.view},
-    )
+    sheet_name = resolve_sheet_name(auth, parsed.workbook, parsed.view)
 
-    workbooks = data.get("workbooksConnection", {}).get("nodes", [])
-    if not workbooks:
+    # Resolve exact names via REST API and embed as literals in GraphQL filter
+    # to avoid the permissions-mode-switch triggered by GraphQL variable-based name filters
+    workbook_name = _resolve_workbook_name(auth, parsed.workbook)
+
+    data = _graphql(auth, _build_fields_query(workbook_name), {})
+
+    all_workbooks = data.get("workbooksConnection", {}).get("nodes", [])
+    if not all_workbooks:
         raise ValueError(f"Workbook {parsed.workbook!r} not found on site {parsed.site!r}.")
 
-    sheets = workbooks[0].get("sheetsConnection", {}).get("nodes", [])
-    if not sheets:
-        raise ValueError(f"Sheet {parsed.view!r} not found in workbook {parsed.workbook!r}.")
+    wb_node = all_workbooks[0]
+    all_views = (
+        wb_node.get("sheetsConnection", {}).get("nodes", [])
+        + wb_node.get("dashboardsConnection", {}).get("nodes", [])
+    )
+    matched = [v for v in all_views if v["name"] == sheet_name]
+    if not matched:
+        raise ValueError(f"View {sheet_name!r} not found in workbook {workbook_name!r}.")
 
-    field_nodes = sheets[0].get("fieldsConnection", {}).get("nodes", [])
+    view = matched[0]
+    if "sheetFieldInstancesConnection" in view:
+        # It's a worksheet — field data is directly available
+        field_nodes = view["sheetFieldInstancesConnection"].get("nodes", [])
+    else:
+        # It's a dashboard — collect fields from all inner sheets and deduplicate by name
+        seen = set()
+        field_nodes = []
+        for sheet in view.get("sheetsConnection", {}).get("nodes", []):
+            for node in sheet.get("sheetFieldInstancesConnection", {}).get("nodes", []):
+                name = node.get("name")
+                if name not in seen:
+                    seen.add(name)
+                    field_nodes.append(node)
     fields, datasource = _parse_fields(field_nodes)
 
     if datasource is None:
         datasource = DatasourceInfo(name="unknown", database="", schema="", table="")
 
     return SheetMetadata(
-        workbook=parsed.workbook,
-        sheet=parsed.view,
+        workbook=workbook_name,
+        sheet=sheet_name,
         fields=fields,
         datasource=datasource,
     )
