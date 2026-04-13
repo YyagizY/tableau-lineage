@@ -7,16 +7,19 @@ underlying Databricks delta table via Unity Catalog, and produces a structured
 ## Repo layout
 
 ```
-tableau_fetch.py          # CLI entry point (Story 4)
-analyze_report.sh         # Claude Code wrapper (Story 5)
+tableau_fetch.py          # CLI entry point
+analyze_report.sh         # Claude Code wrapper
 tableau_fetch/
   __init__.py
-  tableau.py              # Story 1 — Tableau Cloud Metadata Extraction
-  databricks.py           # Story 2 — Delta Table Resolution
-  mapping.py              # Story 3 — Column-Level Mapping
+  tableau.py              # Tableau Cloud Metadata Extraction + Column-Level Mapping
+  databricks.py           # Delta Table Resolution
 requirements.txt
 .env.example
 ```
+
+## Jira epic
+
+Source of truth for stories and acceptance criteria: CXNAPB-112
 
 ## Running locally
 
