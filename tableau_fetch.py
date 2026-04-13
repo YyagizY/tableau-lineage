@@ -25,8 +25,10 @@ from tableau_fetch.tableau import fetch_sheet_metadata, FieldInfo
 from tableau_fetch.databricks import resolve_delta_table
 
 
-def _derive_repo_slug(workbook: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", workbook.lower()).strip("-")
+def _build_repo_name(client: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", client.lower()).strip("-")
+    if not slug:
+        raise ValueError(f"Invalid client name: {client!r} — produces empty repo slug")
     return f"customer-pipeline-{slug}"
 
 
@@ -50,7 +52,7 @@ def _log(msg: str) -> None:
     print(f"  {msg}", flush=True)
 
 
-def run(url: str, repo_override: str | None = None) -> None:
+def run(url: str, client: str) -> None:
     # Step 1: Tableau metadata
     _log("Connecting to Tableau Cloud...")
     sheet_meta = fetch_sheet_metadata(url)
@@ -65,8 +67,17 @@ def run(url: str, repo_override: str | None = None) -> None:
     _log(f"Resolved delta table: {delta.full_name}")
     _log(f"Table path: {delta.storage_path}")
 
-    # Step 3: Assemble output
-    repo_name = repo_override or _derive_repo_slug(sheet_meta.workbook)
+    # Step 3: Resolve repository
+    repo_name = _build_repo_name(client)
+    repo_path = Path.home() / "Desktop" / "repos" / "clients" / repo_name
+    _log(f"Looking for pipeline repo at {repo_path}...")
+    if not repo_path.exists():
+        raise FileNotFoundError(f"Repository not found at {repo_path}")
+    if not os.access(repo_path, os.R_OK):
+        raise PermissionError(f"Permission denied reading repository at {repo_path}")
+    _log(f"Found pipeline repo: {repo_name}")
+
+    # Step 4: Assemble output
     output = {
         "report": sheet_meta.workbook,
         "sheet": sheet_meta.sheet,
@@ -77,9 +88,10 @@ def run(url: str, repo_override: str | None = None) -> None:
         },
         "columns": [_map_column(f) for f in sheet_meta.fields],
         "repo_name": repo_name,
+        "repo_path": str(repo_path),
     }
 
-    # Step 4: Write output
+    # Step 5: Write output
     out_dir = Path.home() / "Desktop" / "tableau_fetch" / sheet_meta.workbook / sheet_meta.sheet
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "metadata.json"
@@ -97,15 +109,14 @@ def main() -> None:
     )
     parser.add_argument("--url", required=True, help="Tableau Cloud report URL (sheet name is derived from the URL)")
     parser.add_argument(
-        "--repo",
-        default=None,
-        help="Override the derived customer pipeline repo name (default: auto-derived from workbook name)",
+        "--client", required=True,
+        help="Client name (used to locate the pipeline repo: customer-pipeline-{client})",
     )
     args = parser.parse_args()
 
     try:
-        run(url=args.url, repo_override=args.repo)
-    except (ValueError, PermissionError, EnvironmentError) as exc:
+        run(url=args.url, client=args.client)
+    except (ValueError, PermissionError, EnvironmentError, FileNotFoundError) as exc:
         print(f"\nError: {exc}", file=sys.stderr)
         sys.exit(1)
 

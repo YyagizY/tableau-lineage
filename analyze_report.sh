@@ -21,16 +21,15 @@ METADATA="$HOME/Desktop/tableau_fetch/$REPORT/$SHEET/metadata.json"
 
 if [[ ! -f "$METADATA" ]]; then
   echo "Error: metadata not found at $METADATA"
-  echo "Run first: python tableau_fetch.py --url \"<url>\" --sheet \"$SHEET\""
+  echo "Run first: python tableau_fetch.py --url \"<url>\" --client \"<client>\""
   exit 1
 fi
 
-# Derive repo name from metadata.json
-REPO_NAME=$(python3 -c "import json; d=json.load(open('$METADATA')); print(d['repo_name'])")
-REPO_PATH="$HOME/Desktop/repos/clients/$REPO_NAME"
+# Read repo path from metadata (validated during fetch)
+REPO_PATH=$(python3 -c "import json; d=json.load(open('$METADATA')); print(d.get('repo_path', ''))")
 
-if [[ ! -d "$REPO_PATH" ]]; then
-  echo "Warning: repo not found at $REPO_PATH — Claude will work from metadata only."
+if [[ -z "$REPO_PATH" || ! -d "$REPO_PATH" ]]; then
+  echo "Warning: pipeline repo not found — Claude will work from metadata only."
   REPO_PATH=""
 fi
 

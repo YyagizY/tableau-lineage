@@ -30,10 +30,10 @@ pip install -r requirements.txt
 # Set credentials (copy .env.example → .env and fill in values, then source it)
 source .env
 
-# Fetch metadata for a report/sheet
+# Fetch metadata for a report (client name required to locate the pipeline repo)
 python tableau_fetch.py \
   --url "https://prod-uk.online.tableau.com/#/site/mysite/views/CustomerDashboard/Revenue" \
-  --sheet "Revenue"
+  --client "mysite"
 
 # Launch Claude Code analysis session
 ./analyze_report.sh CustomerDashboard Revenue
