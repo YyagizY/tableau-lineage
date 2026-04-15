@@ -188,11 +188,6 @@ def _build_fields_query(workbook_name: str) -> str:
 }}
 """
 
-
-def _normalize(name: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", name.lower())
-
-
 def _resolve_workbook_name(auth: TableauAuth, workbook_slug: str) -> str:
     """Resolve the exact workbook name from its URL slug using the REST API."""
     resp = requests.get(
@@ -288,20 +283,20 @@ def _parse_fields(nodes: list[dict]) -> tuple[list[FieldInfo], DatasourceInfo | 
 
 
 def fetch_sheet_metadata(url: str) -> SheetMetadata:
-    parsed = parse_url(url)
-    auth = authenticate(parsed)
+    parsed_url = parse_url(url)
+    auth = authenticate(parsed_url)
 
-    sheet_name = resolve_sheet_name(auth, parsed.workbook, parsed.view)
+    sheet_name = resolve_sheet_name(auth, parsed_url.workbook, parsed_url.view)
 
     # Resolve exact names via REST API and embed as literals in GraphQL filter
     # to avoid the permissions-mode-switch triggered by GraphQL variable-based name filters
-    workbook_name = _resolve_workbook_name(auth, parsed.workbook)
+    workbook_name = _resolve_workbook_name(auth, parsed_url.workbook)
 
     data = _graphql(auth, _build_fields_query(workbook_name), {})
 
     all_workbooks = data.get("workbooksConnection", {}).get("nodes", [])
     if not all_workbooks:
-        raise ValueError(f"Workbook {parsed.workbook!r} not found on site {parsed.site!r}.")
+        raise ValueError(f"Workbook {parsed_url.workbook!r} not found on site {parsed_url.site!r}.")
 
     wb_node = all_workbooks[0]
     all_views = (

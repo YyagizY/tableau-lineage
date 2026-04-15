@@ -43,7 +43,7 @@ def _map_column(f: FieldInfo) -> dict:
         }
     return {
         "displayed_name": f.display_name,
-        "original_column": f.name if f.name != f.display_name else None,
+        "original_column": f.name,
         "is_calculated": False,
     }
 
