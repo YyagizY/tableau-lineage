@@ -104,6 +104,9 @@ def run(url: str, client: str) -> None:
 
 
 def main() -> None:
+    # --url and --client are the two orchestration entry points:
+    # --url identifies the Tableau report to fetch, 
+    # --client resolves the pipeline repo for delta table lookup.
     parser = argparse.ArgumentParser(
         description="Fetch Tableau report metadata and resolve the underlying delta table."
     )

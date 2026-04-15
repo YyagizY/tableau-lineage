@@ -106,11 +106,11 @@ def authenticate(parsed: ParsedUrl) -> TableauAuth:
     )
 
 
-def _graphql(auth: TableauAuth, query: str, variables: dict) -> dict:
+def _graphql(auth: TableauAuth, query: str) -> dict:
     metadata_url = auth.base_url.replace(f"/api/{TABLEAU_API_VERSION}", "/api/metadata/graphql")
     resp = requests.post(
         metadata_url,
-        json={"query": query, "variables": variables},
+        json={"query": query},
         headers={
             "X-Tableau-Auth": auth.token,
             "Accept": "application/json",
@@ -136,6 +136,7 @@ def _build_fields_query(workbook_name: str) -> str:
               ... on ColumnField {
                 __typename
                 dataType
+                role
                 upstreamColumns {
                   name
                   table {
@@ -153,9 +154,7 @@ def _build_fields_query(workbook_name: str) -> str:
                 dataType
                 formula
               }
-              ... on DatasourceField {
-                __typename
-              }"""
+"""
     return f"""
 {{
   workbooksConnection(filter: {{ name: "{safe}" }}) {{
@@ -246,8 +245,10 @@ def _parse_fields(nodes: list[dict]) -> tuple[list[FieldInfo], DatasourceInfo | 
             upstream = node.get("upstreamColumns", [])
             original_cols = [c["name"] for c in upstream if c.get("name")]
             original_col = original_cols[0] if original_cols else display_name
+            field_type = "measure" if node.get("role", "").upper() == "MEASURE" else "dimension"
 
-            # Extract datasource info from the first upstream column that has table info
+            # V1 limitation: only the first table encountered is captured as the datasource.
+            # Views that join multiple tables will silently lose all but the first.
             if datasource is None and upstream:
                 for col in upstream:
                     tbl = col.get("table") or {}
@@ -264,20 +265,14 @@ def _parse_fields(nodes: list[dict]) -> tuple[list[FieldInfo], DatasourceInfo | 
             fi = FieldInfo(
                 name=original_col,
                 display_name=display_name,
-                field_type="dimension",
+                field_type=field_type,
                 data_type=data_type,
                 referenced_columns=original_cols,
             )
             fields.append(fi)
 
-        else:
-            fi = FieldInfo(
-                name=display_name,
-                display_name=display_name,
-                field_type="dimension",
-                data_type=data_type,
-            )
-            fields.append(fi)
+        # DatasourceField (Tableau-generated fields like Number of Records,
+        # Measure Names/Values, groups, sets) have no upstream Databricks column — skip them.
 
     return fields, datasource
 
@@ -286,13 +281,11 @@ def fetch_sheet_metadata(url: str) -> SheetMetadata:
     parsed_url = parse_url(url)
     auth = authenticate(parsed_url)
 
-    sheet_name = resolve_sheet_name(auth, parsed_url.workbook, parsed_url.view)
-
-    # Resolve exact names via REST API and embed as literals in GraphQL filter
-    # to avoid the permissions-mode-switch triggered by GraphQL variable-based name filters
     workbook_name = _resolve_workbook_name(auth, parsed_url.workbook)
 
-    data = _graphql(auth, _build_fields_query(workbook_name), {})
+    # The Metadata API only supports filtering by workbook name, not by sheet/view name.
+    # We fetch the full workbook and filter down to the target sheet.
+    data = _graphql(auth, _build_fields_query(workbook_name))
 
     all_workbooks = data.get("workbooksConnection", {}).get("nodes", [])
     if not all_workbooks:
@@ -303,6 +296,8 @@ def fetch_sheet_metadata(url: str) -> SheetMetadata:
         wb_node.get("sheetsConnection", {}).get("nodes", [])
         + wb_node.get("dashboardsConnection", {}).get("nodes", [])
     )
+
+    sheet_name = resolve_sheet_name(auth, parsed_url.workbook, parsed_url.view)
     matched = [v for v in all_views if v["name"] == sheet_name]
     if not matched:
         raise ValueError(f"View {sheet_name!r} not found in workbook {workbook_name!r}.")
