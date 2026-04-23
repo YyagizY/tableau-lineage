@@ -1,18 +1,22 @@
 # tableau-lineage
 
-Lightweight utility that extracts Tableau Cloud report metadata, resolves the
-underlying Databricks delta table via Unity Catalog, and produces a structured
-`metadata.json` that Claude Code uses to answer manager questions about data lineage.
+Three-step pipeline that downloads a Tableau Cloud workbook, extracts its
+lineage to JSON, and enriches each datasource with the Databricks storage
+path resolved via the SQL Statement Execution API. The final JSON grounds
+Claude Code in data lineage for manager questions.
 
 ## Repo layout
 
 ```
-tableau_fetch.py          # CLI entry point
-analyze_report.sh         # Claude Code wrapper
+pipeline.py               # Orchestrator — runs the three steps end-to-end
+download_workbook.py      # Step 1: Tableau URL → .twb via REST API + PAT
+twbx_lineage.py           # Step 2: .twb/.twbx → lineage JSON
+enrich_with_paths.py      # Step 3: lineage JSON → enriched JSON (adds storage_path)
 tableau_fetch/
   __init__.py
-  tableau.py              # Tableau Cloud Metadata Extraction + Column-Level Mapping
-  databricks.py           # Delta Table Resolution
+  twbx.py                 # .twbx/.twb XML parser used by twbx_lineage.py
+tests/
+  test_twbx.py
 requirements.txt
 .env.example
 ```
@@ -27,28 +31,50 @@ Source of truth for stories and acceptance criteria: CXNAPB-112
 # Install deps
 pip install -r requirements.txt
 
-# Set credentials (copy .env.example → .env and fill in values, then source it)
-source .env
+# Copy .env.example → .env and fill in:
+#   TABLEAU_PAT_NAME, TABLEAU_PAT_SECRET
+#   DATABRICKS_HOST, DATABRICKS_PAT_SECRET
+#   DATABRICKS_WAREHOUSE_ID (optional — auto-picked if omitted)
 
-# Fetch metadata for a report (client name required to locate the pipeline repo)
-python tableau_fetch.py \
-  --url "https://prod-uk.online.tableau.com/#/site/mysite/views/CustomerDashboard/Revenue" \
-  --client "mysite"
+# End-to-end run
+python3 pipeline.py \
+  "https://us-east-1.online.tableau.com/#/site/invent-us/views/DCNeedReport/SummaryView" \
+  --customer fivebelow \
+  -o lineage_enriched.json
+```
 
-# Launch Claude Code analysis session
-./analyze_report.sh CustomerDashboard Revenue
+Each step is also runnable standalone — see each script's `--help`.
+
+## Output shape
+
+```json
+{
+  "customer-name": "customer-pipeline-fivebelow",
+  "sheets": [
+    {
+      "workbook": "...",
+      "sheet": "...",
+      "datasource": {
+        "tableau_datasource_name": "...",
+        "delta_table": "hive_metastore",
+        "storage_path": "/mnt/.../reporting/..."
+      },
+      "fields": [...]
+    }
+  ]
+}
 ```
 
 ## Environment variables
 
-See `.env.example` for required variables and required PAT scopes.
-Never commit `.env` or real PAT values.
+See `.env.example`. Never commit `.env` or real PAT values.
 
 ## Key design decisions
 
-- Only dependency is `requests` (V1 constraint).
-- All credentials come from env vars only — never written to JSON output.
-- Column mapping uses normalised (lowercase, whitespace/underscore stripped) fuzzy matching
-  as a fallback when exact match fails.
-- `analyze_report.sh` launches `claude --print` with an inline system prompt grounding
-  Claude in the metadata file and local repo path.
+- `enrich_with_paths.py` uses the Databricks SQL Statement Execution API
+  (`DESCRIBE DETAIL`) rather than the Unity Catalog tables endpoint, because
+  UC doesn't reliably surface `storage_location` for `hive_metastore` tables.
+- Warehouse auto-selection prefers a RUNNING warehouse to avoid start latency
+  and permission issues with stopped warehouses.
+- `pipeline.py` uses a tempdir for intermediates so only the final enriched
+  JSON remains on disk.
