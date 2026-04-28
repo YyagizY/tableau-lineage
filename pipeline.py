@@ -3,9 +3,9 @@
 Orchestrator: Tableau URL → enriched lineage JSON.
 
 Steps:
-    1. Download the workbook as .twb  (tableau_fetch / download_workbook.py)
-    2. Extract lineage to JSON        (twbx_lineage.py)
-    3. Enrich with Databricks paths   (enrich_with_paths.py)
+    1. Download the workbook as .twb  (tableau_fetch.download_workbook)
+    2. Extract lineage to JSON        (tableau_fetch.twbx_lineage)
+    3. Enrich with Databricks paths   (tableau_fetch.enrich_with_paths)
 
 Only the final enriched JSON is kept; intermediates live in a temp dir.
 
@@ -21,8 +21,6 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import List
-
-HERE = Path(__file__).parent
 
 
 def run_step(label: str, cmd: List[str]) -> None:
@@ -74,17 +72,17 @@ def main() -> None:
         else:
             run_step(
                 "1/3 Download workbook",
-                [sys.executable, str(HERE / "download_workbook.py"), args.url, str(twb_path)],
+                [sys.executable, "-m", "tableau_fetch.download_workbook", args.url, str(twb_path)],
             )
 
         run_step(
             "2/3 Extract lineage",
-            [sys.executable, str(HERE / "twbx_lineage.py"), str(twb_path), "-o", str(raw_json)],
+            [sys.executable, "-m", "tableau_fetch.twbx_lineage", str(twb_path), "-o", str(raw_json)],
         )
 
         run_step(
             "3/3 Enrich with Databricks paths",
-            [sys.executable, str(HERE / "enrich_with_paths.py"), str(raw_json), str(enriched_json)],
+            [sys.executable, "-m", "tableau_fetch.enrich_with_paths", str(raw_json), str(enriched_json)],
         )
 
         with open(enriched_json) as f:

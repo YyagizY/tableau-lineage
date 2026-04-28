@@ -139,16 +139,16 @@ def _find_worksheet_datasource_ref(ws_elem: ET.Element) -> str | None:
 
 
 def _read_twb_xml(path: Path) -> bytes:
-    suffix = path.suffix.lower()
-    if suffix == ".twb":
-        return path.read_bytes()
-    if suffix == ".twbx":
+    data = path.read_bytes()
+    # Tableau's REST download endpoint sometimes returns a zipped .twbx even
+    # when called with includeExtract=false, so dispatch on magic bytes.
+    if data[:4] == b"PK\x03\x04":
         with zipfile.ZipFile(path, "r") as zf:
             twb_names = [n for n in zf.namelist() if n.lower().endswith(".twb")]
             if not twb_names:
                 raise ValueError(f"No .twb file found inside {path}")
             return zf.read(twb_names[0])
-    raise ValueError(f"Unsupported file type {suffix!r}; expected .twb or .twbx")
+    return data
 
 
 def load_twbx(path: str | Path) -> list[TwbxSheet]:

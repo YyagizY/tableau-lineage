@@ -5,11 +5,10 @@ import requests
 from dotenv import load_dotenv
 from pathlib import Path
 
-# Search common locations for the .env file
+# Search common locations for the .env file (cwd, then repo root)
 for env_path in [
     Path.cwd() / ".env",
-    Path(__file__).parent / ".env",
-    Path(__file__).parent / "tableau-lineage" / ".env",
+    Path(__file__).resolve().parent.parent / ".env",
 ]:
     if env_path.exists():
         load_dotenv(env_path)

@@ -8,18 +8,18 @@ Claude Code in data lineage for manager questions.
 ## Repo layout
 
 ```
-pipeline.py               # Orchestrator — runs the three steps end-to-end
-download_workbook.py      # Step 1: Tableau URL → .twb via REST API + PAT
-twbx_lineage.py           # Step 2: .twb/.twbx → lineage JSON
-enrich_with_paths.py      # Step 3: lineage JSON → enriched JSON (adds storage_path)
+pipeline.py                       # Orchestrator — runs the three steps end-to-end
 tableau_fetch/
   __init__.py
-  twbx.py                 # .twbx/.twb XML parser used by twbx_lineage.py
-tests/
-  test_twbx.py
+  download_workbook.py            # Step 1: Tableau URL → .twb via REST API + PAT
+  twbx_lineage.py                 # Step 2: .twb/.twbx → lineage JSON
+  enrich_with_paths.py            # Step 3: lineage JSON → enriched JSON (adds storage_path)
+  twbx.py                         # .twbx/.twb XML parser used by twbx_lineage
 requirements.txt
 .env.example
 ```
+
+`tests/` is gitignored — kept locally for development only.
 
 ## Jira epic
 
@@ -43,7 +43,13 @@ python3 pipeline.py \
   -o lineage_enriched.json
 ```
 
-Each step is also runnable standalone — see each script's `--help`.
+Each step is also runnable standalone as a module from the repo root:
+
+```bash
+python3 -m tableau_fetch.download_workbook  <url> [output.twb]
+python3 -m tableau_fetch.twbx_lineage       <workbook.twb> [-o lineage.json]
+python3 -m tableau_fetch.enrich_with_paths  [input.json] [output.json]
+```
 
 ## Output shape
 
@@ -71,10 +77,15 @@ See `.env.example`. Never commit `.env` or real PAT values.
 
 ## Key design decisions
 
-- `enrich_with_paths.py` uses the Databricks SQL Statement Execution API
-  (`DESCRIBE DETAIL`) rather than the Unity Catalog tables endpoint, because
-  UC doesn't reliably surface `storage_location` for `hive_metastore` tables.
+- `tableau_fetch/enrich_with_paths.py` uses the Databricks SQL Statement
+  Execution API (`DESCRIBE DETAIL`) rather than the Unity Catalog tables
+  endpoint, because UC doesn't reliably surface `storage_location` for
+  `hive_metastore` tables.
 - Warehouse auto-selection prefers a RUNNING warehouse to avoid start latency
   and permission issues with stopped warehouses.
 - `pipeline.py` uses a tempdir for intermediates so only the final enriched
   JSON remains on disk.
+- `tableau_fetch/twbx.py:_read_twb_xml` dispatches on the file's magic bytes
+  (PK header → unzip; otherwise → raw XML) rather than the suffix, because
+  Tableau's REST download endpoint sometimes returns a zipped `.twbx` even
+  when called with `includeExtract=false`.

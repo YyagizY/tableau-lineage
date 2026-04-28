@@ -11,3 +11,4 @@ venv/
 !**/example*.json
 *.twb
 *.twbx
+tests/
