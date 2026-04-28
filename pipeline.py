@@ -22,6 +22,8 @@ import tempfile
 from pathlib import Path
 from typing import List
 
+from tableau_fetch.download_workbook import parse_tableau_url
+
 
 def run_step(label: str, cmd: List[str]) -> None:
     print(f"\n=== {label} ===")
@@ -60,7 +62,6 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        twb_path = tmp / "workbook.twb"
         raw_json = tmp / "lineage.json"
         enriched_json = tmp / "enriched.json"
 
@@ -70,6 +71,11 @@ def main() -> None:
                 sys.exit(f"[pipeline] --twb file not found: {twb_path}")
             print(f"\n=== 1/3 Skipped (using local file: {twb_path.name}) ===")
         else:
+            # Name the temp .twb after the workbook slug so the `workbook`
+            # field in the lineage output reflects the real name (twbx.py
+            # derives it from the file stem).
+            _, _, slug = parse_tableau_url(args.url)
+            twb_path = tmp / f"{slug}.twb"
             run_step(
                 "1/3 Download workbook",
                 [sys.executable, "-m", "tableau_fetch.download_workbook", args.url, str(twb_path)],

@@ -45,13 +45,18 @@ def pick_warehouse() -> str:
     print(f"Auto-selected warehouse: {chosen['name']} ({chosen['id']}, state={chosen['state']})")
     return chosen["id"]
 
-# Matches the "(catalog.schema.table)" portion in a tableau_datasource_name like:
-#   "dcrpl_order_report (hive_metastore.fivebelow.dcrpl_order_report) (fivebelow)"
-FULL_NAME_RE = re.compile(r"\(([a-zA-Z0-9_]+\.[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+)\)")
+# A 3-part fully qualified Spark/Databricks table name: catalog.schema.table.
+THREE_PART_RE = re.compile(r"^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$")
+# Legacy fallback: same pattern wrapped in parens inside a caption like
+# "dcrpl_order_report (hive_metastore.fivebelow.dcrpl_order_report) (fivebelow)".
+PAREN_FULL_NAME_RE = re.compile(r"\(([a-zA-Z0-9_]+\.[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+)\)")
 
 
-def extract_full_name(datasource_name: str):
-    match = FULL_NAME_RE.search(datasource_name or "")
+def extract_full_name(datasource: dict) -> Optional[str]:
+    delta_table = (datasource.get("delta_table") or "").strip()
+    if THREE_PART_RE.match(delta_table):
+        return delta_table
+    match = PAREN_FULL_NAME_RE.search(datasource.get("tableau_datasource_name") or "")
     return match.group(1) if match else None
 
 
@@ -103,8 +108,15 @@ def main(in_path: str, out_path: str):
 
     for entry in data:
         ds = entry.get("datasource") or {}
-        name = ds.get("tableau_datasource_name")
-        full_name = extract_full_name(name)
+
+        # Path-style delta_table (e.g. /mnt/... or dbfs:/...) is itself the
+        # storage location — no metastore lookup needed.
+        delta_table = (ds.get("delta_table") or "").strip()
+        if delta_table and ("/" in delta_table or delta_table.startswith("dbfs:")):
+            ds["storage_path"] = delta_table
+            continue
+
+        full_name = extract_full_name(ds)
         if not full_name:
             ds["storage_path"] = None
             continue
