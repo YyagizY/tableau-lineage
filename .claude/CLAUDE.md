@@ -5,6 +5,8 @@ lineage to JSON, and enriches each datasource with the Databricks storage
 path resolved via the SQL Statement Execution API. The final JSON grounds
 Claude Code in data lineage for manager questions.
 
+@rules/lineage-tracing.md
+
 ## Repo layout
 
 ```
