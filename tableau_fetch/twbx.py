@@ -8,6 +8,7 @@ from the local file.
 
 from __future__ import annotations
 
+import re
 import sys
 import zipfile
 import xml.etree.ElementTree as ET
@@ -59,27 +60,80 @@ def _strip_brackets(name: str) -> str:
     return s
 
 
-def _extract_delta_path(ds_elem: ET.Element) -> str | None:
-    # Preferred: a connection element with a path-style dbname (e.g. Delta location).
-    for conn in ds_elem.iter("connection"):
-        dbname = conn.get("dbname")
-        if dbname:
-            return dbname
+# Captures table refs like FROM/JOIN schema.table or catalog.schema.table.
+# Strips optional backticks/brackets. Stops at whitespace/comma/end.
+_SQL_TABLE_REF_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+"
+    r"[`\[]?([a-zA-Z_][a-zA-Z0-9_]*)[`\]]?"
+    r"\."
+    r"[`\[]?([a-zA-Z_][a-zA-Z0-9_]*)[`\]]?"
+    r"(?:\.[`\[]?([a-zA-Z_][a-zA-Z0-9_]*)[`\]]?)?",
+    re.IGNORECASE,
+)
 
-    # Fallback: schema + table attributes on a connection.
+
+def _parse_custom_sql_table(sql: str) -> tuple[str, ...] | None:
+    refs = {tuple(p for p in m.groups() if p) for m in _SQL_TABLE_REF_RE.finditer(sql or "")}
+    return refs.pop() if len(refs) == 1 else None
+
+
+def _catalog_from_connections(ds_elem: ET.Element) -> str | None:
     for conn in ds_elem.iter("connection"):
+        if conn.get("class") in ("hyper", "federated"):
+            continue
+        dbname = conn.get("dbname")
+        if dbname and "/" not in dbname and not dbname.startswith("dbfs:"):
+            return dbname
+    return None
+
+
+def _extract_delta_path(ds_elem: ET.Element) -> str | None:
+    catalog = _catalog_from_connections(ds_elem)
+
+    # 1. <relation type='table' table='[...]'> — the most reliable signal.
+    #    3 parts → use as-is. 2 parts → combine with the catalog from the
+    #    Databricks connection. Skip the local "[Extract].[Extract]" cache.
+    for rel in ds_elem.iter("relation"):
+        t = rel.get("table") or ""
+        parts = [_strip_brackets(p) for p in t.split(".") if p]
+        if not parts or parts[0].lower() == "extract":
+            continue
+        if len(parts) == 3:
+            return ".".join(parts)
+        if len(parts) == 2 and catalog:
+            return f"{catalog}.{parts[0]}.{parts[1]}"
+
+    # 2. Custom SQL Query (<relation type='text'>). If the SQL references a
+    #    single table, combine with the connection's catalog when needed.
+    for rel in ds_elem.iter("relation"):
+        if rel.get("type") != "text" or not rel.text:
+            continue
+        ref = _parse_custom_sql_table(rel.text)
+        if ref is None:
+            continue
+        if len(ref) == 3:
+            return ".".join(ref)
+        if len(ref) == 2 and catalog:
+            return f"{catalog}.{ref[0]}.{ref[1]}"
+
+    real_conns = [
+        c for c in ds_elem.iter("connection")
+        if c.get("class") not in ("hyper", "federated")
+    ]
+
+    # 3. Connection with dbname + schema + table.
+    for conn in real_conns:
+        dbname = conn.get("dbname")
         schema = conn.get("schema")
         table = conn.get("table")
-        if schema and table:
-            return f"{schema}/{table}"
+        if dbname and schema and table:
+            return f"{dbname}.{schema}.{table}"
 
-    # Last resort: a <relation table="[db].[schema].[table]"/> entry.
-    for rel in ds_elem.iter("relation"):
-        t = rel.get("table")
-        if t:
-            parts = [_strip_brackets(p) for p in t.split(".") if p]
-            if parts:
-                return "/".join(parts)
+    # 4. Path-style dbname (Delta Lake location URL).
+    for conn in real_conns:
+        dbname = conn.get("dbname") or ""
+        if "/" in dbname or dbname.startswith("dbfs:"):
+            return dbname
 
     return None
 
