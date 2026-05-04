@@ -21,12 +21,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import List
-
 from tableau_fetch.download_workbook import parse_tableau_url
 
 
-def run_step(label: str, cmd: List[str]) -> None:
+def run_step(label: str, cmd: list[str]) -> None:
     print(f"\n=== {label} ===")
     result = subprocess.run(cmd)
     if result.returncode != 0:
