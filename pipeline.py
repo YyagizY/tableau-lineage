@@ -8,9 +8,10 @@ Steps:
     3. Enrich with Databricks paths   (tableau_fetch.enrich_with_paths)
 
 Only the final enriched JSON is kept; intermediates live in a temp dir.
+Output: ~/Desktop/tableau_lineage/<customer>/<report>/lineage_enriched.json
 
 Usage:
-    python3 pipeline.py <tableau_url> [-o output.json]
+    python3 pipeline.py <tableau_url> --customer <name>
 """
 
 import argparse
@@ -41,45 +42,33 @@ def build_repo_name(customer: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="End-to-end Tableau → Databricks lineage.")
-    parser.add_argument("url", nargs="?", help="Tableau Cloud workbook URL (omit if --twb is given)")
+    parser.add_argument("url", help="Tableau Cloud workbook URL")
     parser.add_argument("--customer", required=True, help="Customer name, e.g. 'fivebelow'")
-    parser.add_argument(
-        "--twb",
-        help="Path to a local .twb/.twbx file. If provided, skips step 1 (download).",
-    )
-    parser.add_argument(
-        "-o", "--output",
-        default="lineage_enriched.json",
-        help="Final output JSON (default: lineage_enriched.json)",
-    )
     args = parser.parse_args()
 
-    if not args.url and not args.twb:
-        parser.error("either a Tableau URL or --twb <path> is required")
+    _, _, slug = parse_tableau_url(args.url)
+    client_slug = re.sub(r"[^a-z0-9]+", "-", args.customer.lower()).strip("-")
+    if not client_slug:
+        sys.exit(f"Invalid customer name: {args.customer!r}")
 
-    final_output = Path(args.output).resolve()
     repo_name = build_repo_name(args.customer)
+    output_dir = Path.home() / "Desktop" / "tableau_lineage" / client_slug / slug
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final_output = output_dir / "lineage_enriched.json"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
+        # Name the temp .twb after the workbook slug so the `workbook`
+        # field in the lineage output reflects the real name (twbx.py
+        # derives it from the file stem).
+        twb_path = tmp / f"{slug}.twb"
         raw_json = tmp / "lineage.json"
         enriched_json = tmp / "enriched.json"
 
-        if args.twb:
-            twb_path = Path(args.twb).resolve()
-            if not twb_path.exists():
-                sys.exit(f"[pipeline] --twb file not found: {twb_path}")
-            print(f"\n=== 1/3 Skipped (using local file: {twb_path.name}) ===")
-        else:
-            # Name the temp .twb after the workbook slug so the `workbook`
-            # field in the lineage output reflects the real name (twbx.py
-            # derives it from the file stem).
-            _, _, slug = parse_tableau_url(args.url)
-            twb_path = tmp / f"{slug}.twb"
-            run_step(
-                "1/3 Download workbook",
-                [sys.executable, "-m", "tableau_fetch.download_workbook", args.url, str(twb_path)],
-            )
+        run_step(
+            "1/3 Download workbook",
+            [sys.executable, "-m", "tableau_fetch.download_workbook", args.url, str(twb_path)],
+        )
 
         run_step(
             "2/3 Extract lineage",
@@ -98,7 +87,7 @@ def main() -> None:
         with open(final_output, "w") as f:
             json.dump(final, f, indent=2)
 
-    print(f"\nDone. Final output: {final_output}")
+    print(f"\nDone. You can find the JSON at: {final_output}")
 
 
 if __name__ == "__main__":
