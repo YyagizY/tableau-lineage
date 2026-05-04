@@ -91,10 +91,10 @@ def download_workbook(server, api_version, site_id, token, workbook_id, output_p
 
 
 def signout(server, api_version, token):
-    requests.post(
+    check(requests.post(
         f"{server}/api/{api_version}/auth/signout",
         headers={"x-tableau-auth": token},
-    )
+    ))
 
 
 def main(tableau_url, output_path=None):
