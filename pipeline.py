@@ -31,11 +31,15 @@ def run_step(label: str, cmd: list[str]) -> None:
         sys.exit(f"\n[pipeline] step failed: {label}")
 
 
-def build_repo_name(customer: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", customer.lower()).strip("-")
+def slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     if not slug:
-        sys.exit(f"Invalid customer name: {customer!r}")
-    return f"customer-pipeline-{slug}"
+        sys.exit(f"Invalid customer name: {name!r}")
+    return slug
+
+
+def build_repo_name(customer: str) -> str:
+    return f"customer-pipeline-{slugify(customer)}"
 
 
 def main() -> None:
@@ -45,10 +49,7 @@ def main() -> None:
     args = parser.parse_args()
 
     _, _, slug = parse_tableau_url(args.url)
-    client_slug = re.sub(r"[^a-z0-9]+", "-", args.customer.lower()).strip("-")
-    if not client_slug:
-        sys.exit(f"Invalid customer name: {args.customer!r}")
-
+    client_slug = slugify(args.customer)
     repo_name = build_repo_name(args.customer)
     output_dir = Path.home() / "Desktop" / "tableau_lineage" / client_slug / slug
     output_dir.mkdir(parents=True, exist_ok=True)
