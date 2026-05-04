@@ -2,17 +2,6 @@ import os
 import re
 import sys
 import requests
-from dotenv import load_dotenv
-from pathlib import Path
-
-# Search common locations for the .env file (cwd, then repo root)
-for env_path in [
-    Path.cwd() / ".env",
-    Path(__file__).resolve().parent.parent / ".env",
-]:
-    if env_path.exists():
-        load_dotenv(env_path)
-        break
 
 PAT_NAME = os.getenv("TABLEAU_PAT_NAME")
 PAT_SECRET = os.getenv("TABLEAU_PAT_SECRET")
