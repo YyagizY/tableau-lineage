@@ -72,6 +72,7 @@ def download_workbook(server, api_version, site_id, token, workbook_id, output_p
         headers={"x-tableau-auth": token},
         params={"includeExtract": "false"},  # false = .twb, true = .twbx
         stream=True,
+        timeout=60,
     )
     check(resp)
     with open(output_path, "wb") as f:
