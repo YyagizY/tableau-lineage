@@ -103,6 +103,7 @@ _WB_QUERY = """
 {
   workbooks(filter: { luid: "%s" }) {
     name
+    parameters { name }
     dashboards { name }
     sheets {
       name
@@ -282,6 +283,7 @@ def fetch_lineage(tableau_url: str) -> dict:
     wb = wbs[0]
     workbook_name = wb.get("name") or wb_name
 
+    parameters = [p.get("name") for p in (wb.get("parameters") or []) if p.get("name")]
     dashboards = wb.get("dashboards") or []
     sheets = wb.get("sheets") or []
 
@@ -331,6 +333,8 @@ def fetch_lineage(tableau_url: str) -> dict:
         "number-of-sheets": len(sheets),
         "number-of-active-sheets": len(active_sheet_names),
         "number-of-data-sources": len(wb.get("embeddedDatasources", [])),
+        "number-of-parameters": len(parameters),
+        "parameters": parameters,
         "datasources": datasources,
     }
 

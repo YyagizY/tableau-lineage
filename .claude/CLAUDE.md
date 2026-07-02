@@ -75,6 +75,8 @@ it, and its fields (each flagged `is_stale`).
   "number-of-sheets": 17,
   "number-of-active-sheets": 17,
   "number-of-data-sources": 8,
+  "number-of-parameters": 3,
+  "parameters": ["Review Dimension DC", "Measure Selector", "..."],
   "datasources": [
     {
       "datasource_name": "...",
@@ -108,6 +110,9 @@ Definitions:
   reference graph comes from `CalculatedField.fields`.
 - **`delta_table`** is retained alongside `storage_path` because
   `enrich_with_paths.py` needs it and `rules/lineage-tracing.md` keys off it.
+- **`parameters`** lists workbook parameter *names* only. The Metadata API's
+  `Parameter` type exposes nothing else (no datatype / current value / allowed
+  values); that richer detail exists only in the downloaded `.twb` XML.
 
 ## Environment variables
 
