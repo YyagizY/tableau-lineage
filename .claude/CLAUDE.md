@@ -62,23 +62,52 @@ python3 -m tableau_fetch.twbx_lineage       <workbook.twb> [-o lineage.json]
 
 ## Output shape
 
+Workbook-centric. Counts summarize the workbook; each datasource carries its
+resolved storage path, connection type, active-usage flag, the sheets that use
+it, and its fields (each flagged `is_stale`).
+
 ```json
 {
   "customer-name": "customer-pipeline-fivebelow",
-  "sheets": [
+  "workbook-name": "DC Need Report",
+  "number-of-dashboards": 13,
+  "number-of-active-dashboards": 13,
+  "number-of-sheets": 17,
+  "number-of-active-sheets": 17,
+  "number-of-data-sources": 8,
+  "datasources": [
     {
-      "workbook": "...",
-      "sheet": "...",
-      "datasource": {
-        "tableau_datasource_name": "...",
-        "delta_table": "hive_metastore",
-        "storage_path": "/mnt/.../reporting/..."
-      },
-      "fields": [...]
+      "datasource_name": "...",
+      "delta_table": "hive_metastore.fivebelow.dcrpl_order_report",
+      "storage_path": "dbfs:/mnt/.../dc_rpl/reporting/order_report",
+      "connection_type": "live",
+      "is_used_actively": true,
+      "sheets_using_the_datasource": ["sheet1", "sheet2"],
+      "fields": [
+        {
+          "displayed_name": "Review Dimension",
+          "original_column": null,
+          "data_type": "STRING",
+          "is_calculated": true,
+          "formula": "IF [Parameters].[Parameter 1]=... END",
+          "is_stale": false
+        }
+      ]
     }
   ]
 }
 ```
+
+Definitions:
+- **active sheet** = worksheet surfaced in ≥1 dashboard (`containedInDashboards`).
+- **`connection_type`** = `extract` if the datasource has a materialized extract
+  (`hasExtracts`), else `live`.
+- **`is_used_actively`** = the datasource has ≥1 active downstream sheet.
+- **`is_stale`** (field) = the field is used by no active sheet — directly or
+  transitively. A field referenced by a used calc field is *not* stale; the
+  reference graph comes from `CalculatedField.fields`.
+- **`delta_table`** is retained alongside `storage_path` because
+  `enrich_with_paths.py` needs it and `rules/lineage-tracing.md` keys off it.
 
 ## Environment variables
 

@@ -88,9 +88,14 @@ def main() -> None:
         )
 
         with open(enriched_json) as f:
-            sheets = json.load(f)
+            enriched = json.load(f)
 
-        final = {"customer-name": repo_name, "sheets": sheets}
+        if isinstance(enriched, dict):
+            # New workbook-centric shape: customer-name first, then the doc.
+            final = {"customer-name": repo_name, **enriched}
+        else:
+            # Legacy (--twb) per-sheet list.
+            final = {"customer-name": repo_name, "sheets": enriched}
         with open(final_output, "w") as f:
             json.dump(final, f, indent=2)
 

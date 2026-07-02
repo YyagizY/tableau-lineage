@@ -2,23 +2,29 @@
 """
 Fetch Tableau lineage via the Metadata API (GraphQL) — no workbook download.
 
-Replaces the download_workbook + twbx XML-parse front end. Uses the
-*datasource-level* path
+Reads workbook structure, datasources, and per-field lineage straight from the
+Metadata API and emits a workbook-centric JSON document:
 
-    workbooksConnection -> embeddedDatasourcesConnection
-                        -> fieldsConnection -> upstreamColumns
+    {
+      "workbook-name": ...,
+      "number-of-dashboards": N, "number-of-active-dashboards": N,
+      "number-of-sheets": N, "number-of-active-sheets": N,
+      "number-of-data-sources": N,
+      "datasources": [
+        { "datasource_name", "delta_table", "storage_path" (filled by enrich),
+          "connection_type", "is_used_actively", "sheets_using_the_datasource",
+          "fields": [ { "displayed_name", "original_column", "data_type",
+                        "is_calculated", "formula", "is_stale" } ] } ]
+    }
 
-which reads column references straight from the embedded datasource model,
-instead of the sheet-level path
+Uses the *datasource-level* path (embeddedDatasources → fields → upstreamColumns)
+rather than the sheet-level path, whose upstreamColumns resolve through Tableau's
+catalog/lineage layer and come back empty for Hive Metastore connections.
 
-    workbooksConnection -> sheetsConnection
-                        -> sheetFieldInstancesConnection -> upstreamColumns
-
-whose upstreamColumns are resolved through Tableau's lineage/catalog layer and
-come back empty for Hive Metastore connections.
-
-Emits the exact same per-sheet JSON shape as tableau_fetch.twbx, so
-enrich_with_paths.py and all downstream consumers are unchanged.
+"active sheet"      = a worksheet surfaced in >= 1 dashboard (containedInDashboards)
+"is_used_actively"  = a datasource with >= 1 active downstream sheet
+"is_stale" (field)  = the field is used by no active sheet, directly OR transitively
+                      (a field referenced by a used field is not stale)
 
 Usage:
     python3 -m tableau_fetch.metadata_lineage <tableau_url> [-o lineage.json]
@@ -35,13 +41,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from tableau_fetch.twbx import (
-    TwbxField,
-    TwbxDatasource,
-    TwbxSheet,
-    to_json_payload,
-    _parse_custom_sql_table,
-)
+from tableau_fetch.twbx import _parse_custom_sql_table
 from tableau_fetch.download_workbook import parse_tableau_url
 
 for _env_path in [Path.cwd() / ".env", Path(__file__).resolve().parent.parent / ".env"]:
@@ -99,12 +99,19 @@ def resolve_workbook_luid(server, site_id, token, workbook_slug):
     return wbs[0]["name"], wbs[0]["id"]
 
 
-_DS_QUERY = """
+_WB_QUERY = """
 {
   workbooks(filter: { luid: "%s" }) {
     name
+    dashboards { name }
+    sheets {
+      name
+      containedInDashboards { name }
+      sheetFieldInstances { name }
+    }
     embeddedDatasources {
       name
+      hasExtracts
       downstreamSheets { name }
       upstreamTables {
         name
@@ -125,7 +132,11 @@ _DS_QUERY = """
             }
           }
         }
-        ... on CalculatedField { dataType formula }
+        ... on CalculatedField {
+          dataType
+          formula
+          fields { name }
+        }
       }
     }
   }
@@ -178,7 +189,6 @@ def _delta_for_datasource(ds: dict) -> str | None:
         # V1: if a datasource joins multiple tables, take the first.
         return _delta_from_database_table(tables[0])
 
-    # Fallback: dig a CustomSQLTable out of the fields' upstreamColumns.
     for f in ds.get("fields", []):
         for col in f.get("upstreamColumns") or []:
             tbl = col.get("table") or {}
@@ -189,31 +199,80 @@ def _delta_for_datasource(ds: dict) -> str | None:
     return None
 
 
-def _parse_field(node: dict) -> TwbxField | None:
+def _field_record(node: dict) -> dict | None:
+    """Map a GraphQL field node to the output field dict (is_stale filled later)."""
     typename = node.get("__typename")
     display = node.get("name", "")
     dtype = (node.get("dataType") or "STRING").upper()
 
     if typename == "CalculatedField":
-        return TwbxField(display, None, dtype, True, node.get("formula"))
+        return {
+            "displayed_name": display,
+            "original_column": None,
+            "data_type": dtype,
+            "is_calculated": True,
+            "formula": node.get("formula"),
+            "is_stale": False,
+        }
 
     if typename == "ColumnField":
         upstream = node.get("upstreamColumns") or []
-        # dataType=TABLE with no upstream columns is the datasource pseudo-field.
         if not upstream and dtype == "TABLE":
-            return None
-        original = upstream[0]["name"] if upstream else display
-        return TwbxField(display, original, dtype, False, None)
+            return None  # datasource pseudo-field
+        return {
+            "displayed_name": display,
+            "original_column": upstream[0]["name"] if upstream else display,
+            "data_type": dtype,
+            "is_calculated": False,
+            "formula": None,
+            "is_stale": False,
+        }
 
     return None
 
 
-def fetch_lineage(tableau_url: str) -> list[TwbxSheet]:
+def _stale_names(ds: dict, active_sheet_names: set, sheet_fields: dict) -> set:
+    """Names of this datasource's fields that no active sheet uses (transitively).
+
+    directly-used = field names on active sheets that use this datasource.
+    used-closure  = directly-used + every field reachable by following
+                    calc-field reference edges from them.
+    stale         = datasource fields not in the closure.
+    """
+    ds_field_names = {f.get("name") for f in ds.get("fields", [])}
+
+    # references graph: field name -> set of field names it references (calc fields)
+    refs = {}
+    for f in ds.get("fields", []):
+        if f.get("__typename") == "CalculatedField":
+            refs[f.get("name")] = {r.get("name") for r in (f.get("fields") or [])}
+
+    active_ds_sheets = [s.get("name") for s in ds.get("downstreamSheets", [])
+                        if s.get("name") in active_sheet_names]
+
+    directly_used = set()
+    for sheet in active_ds_sheets:
+        directly_used |= (sheet_fields.get(sheet, set()) & ds_field_names)
+
+    # forward closure: if U is used and U references F, then F is used too
+    used = set(directly_used)
+    stack = list(directly_used)
+    while stack:
+        cur = stack.pop()
+        for ref in refs.get(cur, set()):
+            if ref in ds_field_names and ref not in used:
+                used.add(ref)
+                stack.append(ref)
+
+    return ds_field_names - used
+
+
+def fetch_lineage(tableau_url: str) -> dict:
     server, site, workbook_slug = parse_tableau_url(tableau_url)
     token, site_id = signin(server, site)
     try:
         wb_name, luid = resolve_workbook_luid(server, site_id, token, workbook_slug)
-        data = _graphql(server, token, _DS_QUERY % luid)
+        data = _graphql(server, token, _WB_QUERY % luid)
     finally:
         signout(server, token)
 
@@ -223,24 +282,57 @@ def fetch_lineage(tableau_url: str) -> list[TwbxSheet]:
     wb = wbs[0]
     workbook_name = wb.get("name") or wb_name
 
-    sheets: list[TwbxSheet] = []
+    dashboards = wb.get("dashboards") or []
+    sheets = wb.get("sheets") or []
+
+    # active sheet = surfaced in >= 1 dashboard; active dashboard = contains such a sheet
+    active_sheet_names = set()
+    active_dashboard_names = set()
+    sheet_fields = {}
+    for s in sheets:
+        name = s.get("name")
+        containing = [d.get("name") for d in (s.get("containedInDashboards") or [])]
+        if containing:
+            active_sheet_names.add(name)
+            active_dashboard_names.update(containing)
+        sheet_fields[name] = {fi.get("name") for fi in (s.get("sheetFieldInstances") or [])}
+
+    datasources = []
     for ds in wb.get("embeddedDatasources", []):
-        caption = ds.get("name", "")
         delta = _delta_for_datasource(ds)
         if delta is None:
-            print(f"Warning: no delta path for datasource {caption!r}", file=sys.stderr)
+            print(f"Warning: no delta path for datasource {ds.get('name')!r}", file=sys.stderr)
 
-        fields = [f for f in (_parse_field(n) for n in ds.get("fields", [])) if f]
-        ds_info = TwbxDatasource(tableau_datasource_name=caption, delta_table=delta)
+        downstream = [s.get("name") for s in (ds.get("downstreamSheets") or [])]
+        stale = _stale_names(ds, active_sheet_names, sheet_fields)
 
-        for sheet in ds.get("downstreamSheets", []):
-            sheets.append(TwbxSheet(
-                workbook=workbook_name,
-                sheet=sheet.get("name", ""),
-                datasource=ds_info,
-                fields=list(fields),
-            ))
-    return sheets
+        fields = []
+        for node in ds.get("fields", []):
+            rec = _field_record(node)
+            if rec is None:
+                continue
+            rec["is_stale"] = rec["displayed_name"] in stale
+            fields.append(rec)
+
+        datasources.append({
+            "datasource_name": ds.get("name", ""),
+            "delta_table": delta,
+            "storage_path": None,  # filled by enrich_with_paths
+            "connection_type": "extract" if ds.get("hasExtracts") else "live",
+            "is_used_actively": any(s in active_sheet_names for s in downstream),
+            "sheets_using_the_datasource": downstream,
+            "fields": fields,
+        })
+
+    return {
+        "workbook-name": workbook_name,
+        "number-of-dashboards": len(dashboards),
+        "number-of-active-dashboards": len(active_dashboard_names),
+        "number-of-sheets": len(sheets),
+        "number-of-active-sheets": len(active_sheet_names),
+        "number-of-data-sources": len(wb.get("embeddedDatasources", [])),
+        "datasources": datasources,
+    }
 
 
 def main() -> None:
@@ -250,14 +342,15 @@ def main() -> None:
                         help="Output JSON path (default: tableau_lineage.json)")
     args = parser.parse_args()
 
-    sheets = fetch_lineage(args.url)
-    if not sheets:
-        print("Error: no sheets/datasources found", file=sys.stderr)
+    doc = fetch_lineage(args.url)
+    if not doc["datasources"]:
+        print("Error: no datasources found", file=sys.stderr)
         sys.exit(1)
 
-    Path(args.output).write_text(json.dumps(to_json_payload(sheets), indent=2))
-    delta = sheets[0].datasource.delta_table or "<none>"
-    print(f"Loaded: {sheets[0].workbook} | {len(sheets)} sheet-records | first delta: {delta}")
+    Path(args.output).write_text(json.dumps(doc, indent=2))
+    print(f"Loaded: {doc['workbook-name']} | "
+          f"{doc['number-of-data-sources']} datasources | "
+          f"{doc['number-of-active-sheets']}/{doc['number-of-sheets']} active sheets")
     print(f"Written: {args.output}")
 
 
