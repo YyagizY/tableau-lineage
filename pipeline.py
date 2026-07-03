@@ -3,14 +3,18 @@
 Orchestrator: Tableau URL → enriched lineage JSON.
 
 Steps:
-    1. Download the workbook as .twb  (tableau_fetch.download_workbook)
-    2. Extract lineage to JSON        (tableau_fetch.twbx_lineage)
-    3. Enrich with Databricks paths   (tableau_fetch.enrich_with_paths)
+    1. Fetch lineage to JSON           (tableau_fetch.metadata_lineage — Metadata API, no download)
+    2. Enrich with Databricks paths    (tableau_fetch.enrich_with_paths)
+
+Lineage is read straight from the Tableau Metadata API (GraphQL); the workbook
+is never downloaded. A local .twb/.twbx can still be parsed offline via --twb,
+which routes through the legacy XML extractor (tableau_fetch.twbx_lineage).
 
 Only the final enriched JSON is kept; intermediates live in a temp dir.
 
 Usage:
-    python3 pipeline.py <tableau_url> [-o output.json]
+    python3 pipeline.py <tableau_url> --customer <name> [-o output.json]
+    python3 pipeline.py --twb <local.twb> --customer <name> [-o output.json]
 """
 
 import argparse
@@ -21,8 +25,6 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import List
-
-from tableau_fetch.download_workbook import parse_tableau_url
 
 
 def run_step(label: str, cmd: List[str]) -> None:
@@ -45,7 +47,8 @@ def main() -> None:
     parser.add_argument("--customer", required=True, help="Customer name, e.g. 'fivebelow'")
     parser.add_argument(
         "--twb",
-        help="Path to a local .twb/.twbx file. If provided, skips step 1 (download).",
+        help="Path to a local .twb/.twbx file. Parses it offline via the legacy "
+             "XML extractor instead of calling the Metadata API.",
     )
     parser.add_argument(
         "-o", "--output",
@@ -69,32 +72,30 @@ def main() -> None:
             twb_path = Path(args.twb).resolve()
             if not twb_path.exists():
                 sys.exit(f"[pipeline] --twb file not found: {twb_path}")
-            print(f"\n=== 1/3 Skipped (using local file: {twb_path.name}) ===")
-        else:
-            # Name the temp .twb after the workbook slug so the `workbook`
-            # field in the lineage output reflects the real name (twbx.py
-            # derives it from the file stem).
-            _, _, slug = parse_tableau_url(args.url)
-            twb_path = tmp / f"{slug}.twb"
             run_step(
-                "1/3 Download workbook",
-                [sys.executable, "-m", "tableau_fetch.download_workbook", args.url, str(twb_path)],
+                "1/2 Extract lineage (local .twb, offline)",
+                [sys.executable, "-m", "tableau_fetch.twbx_lineage", str(twb_path), "-o", str(raw_json)],
+            )
+        else:
+            run_step(
+                "1/2 Fetch lineage (Metadata API, no download)",
+                [sys.executable, "-m", "tableau_fetch.metadata_lineage", args.url, "-o", str(raw_json)],
             )
 
         run_step(
-            "2/3 Extract lineage",
-            [sys.executable, "-m", "tableau_fetch.twbx_lineage", str(twb_path), "-o", str(raw_json)],
-        )
-
-        run_step(
-            "3/3 Enrich with Databricks paths",
+            "2/2 Enrich with Databricks paths",
             [sys.executable, "-m", "tableau_fetch.enrich_with_paths", str(raw_json), str(enriched_json)],
         )
 
         with open(enriched_json) as f:
-            sheets = json.load(f)
+            enriched = json.load(f)
 
-        final = {"customer-name": repo_name, "sheets": sheets}
+        if isinstance(enriched, dict):
+            # New workbook-centric shape: customer-name first, then the doc.
+            final = {"customer-name": repo_name, **enriched}
+        else:
+            # Legacy (--twb) per-sheet list.
+            final = {"customer-name": repo_name, "sheets": enriched}
         with open(final_output, "w") as f:
             json.dump(final, f, indent=2)
 

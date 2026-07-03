@@ -106,9 +106,14 @@ def main(in_path: str, out_path: str):
 
     cache: Dict[str, Optional[str]] = {}
 
-    for entry in data:
-        ds = entry.get("datasource") or {}
+    # New workbook-centric shape has a top-level "datasources" list; the legacy
+    # (--twb) shape is a list of per-sheet records each holding a "datasource".
+    if isinstance(data, dict) and "datasources" in data:
+        datasources = data["datasources"]
+    else:
+        datasources = [entry.get("datasource") or {} for entry in data]
 
+    for ds in datasources:
         # Path-style delta_table (e.g. /mnt/... or dbfs:/...) is itself the
         # storage location — no metastore lookup needed.
         delta_table = (ds.get("delta_table") or "").strip()
